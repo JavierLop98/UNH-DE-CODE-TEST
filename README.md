@@ -93,6 +93,9 @@ python src/03_parse_index_files.py
 
 # Step 4: Generate Markdown insights report
 python src/04_generate_insights.py
+
+# Step 5: Generate charts and advanced insights
+python src/05_advanced_insights.py
 ```
 
 ### Command-Line Options
@@ -123,7 +126,7 @@ export SNOWFLAKE_SCHEMA="<schema>"
 3. Run:
 
 ```bash
-python src/05_load_to_snowflake.py
+python src/06_load_to_snowflake.py
 ```
 
 DDL for explicit table creation is in [`sql/create_tables.sql`](sql/create_tables.sql).
@@ -150,7 +153,8 @@ UNH-DE-CODE-TEST/
 │   ├── 02_download_index_files.py   # Streaming download with retries
 │   ├── 03_parse_index_files.py      # JSON → Parquet normalization
 │   ├── 04_generate_insights.py      # Analytics and reporting
-│   ├── 05_load_to_snowflake.py      # Optional Snowflake loader
+│   ├── 05_advanced_insights.py      # Charts and deep analysis
+│   ├── 06_load_to_snowflake.py      # Optional Snowflake loader
 │   └── utils/
 │       ├── __init__.py
 │       └── io_utils.py              # File I/O helpers
