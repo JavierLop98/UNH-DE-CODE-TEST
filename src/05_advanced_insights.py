@@ -1,10 +1,7 @@
 """
 05_advanced_insights.py
------------------------
 Generates advanced visualizations and deeper insights from the parsed UHC data.
-
 Produces PNG charts in reports/charts/ and an extended insights report.
-This script is designed to support the interview presentation.
 """
 import argparse
 import sys
@@ -14,24 +11,23 @@ import re
 
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")  # Non-interactive backend
+matplotlib.use("Agg")  # non-interactive backend for server/CI
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import seaborn as sns
 
+# make local utils importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils.io_utils import ensure_dir
 
-# ── Style Configuration ──────────────────────────────────────────────────
+# --- Style defaults ---
 sns.set_theme(style="whitegrid", font_scale=1.1)
-PALETTE = sns.color_palette("viridis", 12)
 ACCENT = "#2196F3"
 FIG_DPI = 150
 CHART_DIR = "reports/charts"
 
 
 def load_data(processed_dir: str) -> dict:
-    """Load all processed datasets."""
+    """Load all processed datasets into a dict."""
     def safe_pq(name):
         p = Path(processed_dir) / name
         return pd.read_parquet(p) if p.exists() else pd.DataFrame()
@@ -50,9 +46,7 @@ def load_data(processed_dir: str) -> dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# CHART GENERATORS
-# ═══════════════════════════════════════════════════════════════════════════
+# --- Chart functions ---
 
 def chart_download_status(downloads: pd.DataFrame, output_dir: str):
     """Bar chart of download statuses."""
@@ -146,7 +140,7 @@ def chart_url_reuse(refs: pd.DataFrame, output_dir: str):
         distinct_indexes=("index_file_id", "nunique")
     ).sort_values("refs", ascending=False).head(10)
 
-    # Shorten URL labels
+    # shorten URL labels so they fit on the chart
     labels = []
     for url in url_counts.index:
         parts = url.split("/")[-1].replace(".json.gz", "").replace("2026-06-01_", "")
@@ -178,16 +172,15 @@ def chart_network_types(refs: pd.DataFrame, output_dir: str):
     """Analyze and chart the network types extracted from referenced file URLs."""
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Extract network names from URLs
+    # try to extract network names from the URL path
     network_names = []
     for url in refs[refs["file_type"] == "in_network"]["location_url"].dropna():
-        # Pattern: ..._Third-Party-Administrator_NETWORK-NAME_NNN_in-network-rates.json.gz
         match = re.search(r"Third-Party-Administrator_(.+?)_\d+_in-network", url)
         if match:
             network_names.append(match.group(1).replace("-", " "))
 
     if not network_names:
-        # Fallback: try from description column
+        # fallback: use the description column if URL parsing didn't work
         for desc in refs[refs["file_type"] == "in_network"]["description"].dropna():
             network_names.append(desc)
 
@@ -235,14 +228,13 @@ def chart_refs_per_index(refs: pd.DataFrame, output_dir: str):
 
 
 def chart_entity_plan_heatmap(indexes: pd.DataFrame, plans: pd.DataFrame, output_dir: str):
-    """Heatmap of entity vs number of plans."""
+    """Grouped bar chart: total vs distinct plans per reporting entity."""
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Merge entity names into plans
+    # link entity names to plans via index_file_id
     entity_map = indexes[["index_file_id", "reporting_entity_name"]].drop_duplicates()
     plans_with_entity = plans.merge(entity_map, on="index_file_id", how="left")
 
-    # Plans per entity
     entity_plan_counts = plans_with_entity.groupby("reporting_entity_name").agg(
         total_plans=("plan_key", "count"),
         distinct_plans=("plan_name", "nunique"),
@@ -253,7 +245,7 @@ def chart_entity_plan_heatmap(indexes: pd.DataFrame, plans: pd.DataFrame, output
         entity_plan_counts["total_plans"] / entity_plan_counts["index_files"]
     ).round(2)
 
-    # Create grouped bar chart
+    # grouped bars: total plans vs distinct plan names
     x = range(len(entity_plan_counts))
     width = 0.35
     bars1 = ax.bar([i - width/2 for i in x], entity_plan_counts["total_plans"],
@@ -269,7 +261,7 @@ def chart_entity_plan_heatmap(indexes: pd.DataFrame, plans: pd.DataFrame, output
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Add value labels
+    # value labels on top of each bar
     for bar in bars1:
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 5,
                 f"{int(bar.get_height()):,}", ha="center", va="bottom", fontsize=9, fontweight="bold")
@@ -328,7 +320,7 @@ def chart_pipeline_summary(downloads: pd.DataFrame, indexes: pd.DataFrame,
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.axis("off")
-        # Add subtle background circle
+        # subtle background circle for visual emphasis
         circle = plt.Circle((0.5, 0.55), 0.3, transform=ax.transAxes,
                            color=color, alpha=0.08, zorder=0)
         ax.add_patch(circle)
@@ -340,7 +332,7 @@ def chart_pipeline_summary(downloads: pd.DataFrame, indexes: pd.DataFrame,
 
 
 def chart_url_sharing_network(refs: pd.DataFrame, indexes: pd.DataFrame, output_dir: str):
-    """Show how many index files share each distinct URL — a measure of data centralization."""
+    """Show how many index files share each distinct URL (data centralization)."""
     fig, ax = plt.subplots(figsize=(10, 5))
 
     url_index_counts = refs.groupby("location_url")["index_file_id"].nunique()
@@ -352,7 +344,7 @@ def chart_url_sharing_network(refs: pd.DataFrame, indexes: pd.DataFrame, output_
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Annotate
+    # callout for the most shared URL
     ax.annotate(
         f"Most shared URL:\n{url_index_counts.max()} index files",
         xy=(url_index_counts.max(), 1), xytext=(url_index_counts.max() * 0.7, ax.get_ylim()[1] * 0.7),
@@ -379,7 +371,7 @@ def generate_extended_insights(data: dict, output_dir: str):
         "",
     ]
 
-    # Insight: Data centralization
+    # Insight A: how centralized is the data?
     url_index_counts = refs.groupby("location_url")["index_file_id"].nunique()
     top_url = url_index_counts.idxmax()
     top_url_count = url_index_counts.max()
@@ -400,7 +392,7 @@ def generate_extended_insights(data: dict, output_dir: str):
         "",
     ]
 
-    # Insight: Entity concentration
+    # Insight B: which entities dominate?
     entity_counts = indexes["reporting_entity_name"].value_counts()
     top_entity_pct = entity_counts.iloc[0] / len(indexes) * 100
 
@@ -418,7 +410,7 @@ def generate_extended_insights(data: dict, output_dir: str):
         "",
     ]
 
-    # Insight: Network coverage
+    # Insight C: what networks show up most?
     network_names = []
     for url in refs[refs["file_type"] == "in_network"]["location_url"].dropna():
         match = re.search(r"Third-Party-Administrator_(.+?)_\d+_in-network", url)
@@ -444,7 +436,7 @@ def generate_extended_insights(data: dict, output_dir: str):
             "",
         ]
 
-    # Insight: Plan complexity
+    # Insight D: single-plan vs multi-plan employers
     plans_per_idx = plans.groupby("index_file_id").size()
     single_plan = (plans_per_idx == 1).sum()
     multi_plan = (plans_per_idx > 1).sum()
@@ -463,7 +455,7 @@ def generate_extended_insights(data: dict, output_dir: str):
         "",
     ]
 
-    # Insight: File size patterns
+    # Insight E: file sizes
     if not downloads.empty:
         sizes = downloads[downloads["status"].isin(["downloaded", "already_exists"])]["bytes_written"]
         lines += [
@@ -480,7 +472,7 @@ def generate_extended_insights(data: dict, output_dir: str):
             "",
         ]
 
-    # Write extended insights
+    # write the extended report
     Path(f"{output_dir}/extended_insights.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"  [OK] extended_insights.md")
 

@@ -2,15 +2,6 @@
 __pycache__/
 *.pyc
 .env
-data/raw/*.json
-data/processed/*.parquet
-data/processed/*.csv
+data/raw/
+data/processed/
 .DS_Store
-
-# Generated reports are git-ignored except charts and presentation
-reports/insights_summary.md
-reports/extended_insights.md
-
-# Keep charts and presentation in the repo for the interview
-!reports/charts/
-!reports/interview_presentation.md

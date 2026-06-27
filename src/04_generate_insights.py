@@ -1,16 +1,8 @@
 """
 04_generate_insights.py
------------------------
-Reads the parsed Parquet tables and generates a Markdown insights report.
-
-Sections:
-  1. Ingestion summary (download stats)
-  2. Parse quality metrics
-  3. Reporting entity analysis
-  4. Plan distribution
-  5. Referenced machine-readable files
-  6. Data quality findings
-  7. Production recommendations
+Reads the parsed Parquet tables and generates a Markdown insights report
+covering ingestion stats, parse quality, entity analysis, plan distribution,
+referenced files, data quality, and production recommendations.
 """
 import argparse
 import sys
@@ -18,11 +10,13 @@ from pathlib import Path
 
 import pandas as pd
 
+# make local utils importable
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils.io_utils import ensure_dir
 
 
 def safe_read_parquet(path: str) -> pd.DataFrame:
+    """Return the parquet file as a DataFrame, or empty if it doesn't exist."""
     p = Path(path)
     return pd.read_parquet(p) if p.exists() else pd.DataFrame()
 
@@ -37,13 +31,12 @@ def main():
 
     ensure_dir("reports")
 
-    # Load data
+    # Load all the processed data we need
     dl_log_path = f"{args.processed_dir}/download_log.csv"
     parse_log_path = f"{args.processed_dir}/parse_log.csv"
     downloads = pd.read_csv(dl_log_path) if Path(dl_log_path).exists() else pd.DataFrame()
     parse_log = pd.read_csv(parse_log_path) if Path(parse_log_path).exists() else pd.DataFrame()
     indexes = safe_read_parquet(f"{args.processed_dir}/index_files.parquet")
-    entities = safe_read_parquet(f"{args.processed_dir}/reporting_entities.parquet")
     plans = safe_read_parquet(f"{args.processed_dir}/plans.parquet")
     refs = safe_read_parquet(f"{args.processed_dir}/referenced_files.parquet")
 
@@ -54,7 +47,7 @@ def main():
         "",
     ]
 
-    # ── 1. Ingestion Summary ──────────────────────────────────────────────
+    # -- Section 1: Ingestion Summary --
     if not downloads.empty:
         status_counts = downloads["status"].value_counts(dropna=False)
         total_bytes = int(downloads["bytes_written"].fillna(0).sum())
@@ -72,7 +65,7 @@ def main():
             "",
         ]
 
-    # ── 2. Parse Quality ──────────────────────────────────────────────────
+    # -- Section 2: Parse Quality --
     if not parse_log.empty:
         parse_counts = parse_log["parse_status"].value_counts(dropna=False)
         lines += [
@@ -90,7 +83,7 @@ def main():
                 "",
             ]
 
-    # ── 3. Reporting Entities ─────────────────────────────────────────────
+    # -- Section 3: Reporting Entities --
     if not indexes.empty:
         entity_type_counts = indexes["reporting_entity_type"].value_counts(dropna=False)
         top_entities = indexes["reporting_entity_name"].value_counts(dropna=False).head(15)
@@ -110,7 +103,7 @@ def main():
             "",
         ]
 
-    # ── 4. Plan Distribution ──────────────────────────────────────────────
+    # -- Section 4: Plan Distribution --
     if not plans.empty:
         plans_per_index = plans.groupby("index_file_id").size()
         market_type = plans["plan_market_type"].value_counts(dropna=False)
@@ -136,11 +129,12 @@ def main():
             "",
         ]
 
-    # ── 5. Referenced Files ───────────────────────────────────────────────
+    # -- Section 5: Referenced Files --
     if not refs.empty:
         refs_per_index = refs.groupby("index_file_id").size()
         file_type_counts = refs["file_type"].value_counts(dropna=False)
 
+        # find the most reused URLs across index files
         reused = (
             refs.groupby("location_url")
             .agg(
@@ -170,7 +164,7 @@ def main():
             "",
         ]
 
-    # ── 6. Data Quality Findings ──────────────────────────────────────────
+    # -- Section 6: Data Quality Findings --
     quality_items = []
     if not indexes.empty:
         null_entity = indexes["reporting_entity_name"].isna().sum()
@@ -196,7 +190,7 @@ def main():
     else:
         lines += ["## 6. Data Quality Findings", "", "No data quality issues detected.", ""]
 
-    # ── 7. Production Recommendations ─────────────────────────────────────
+    # -- Section 7: Production Recommendations --
     lines += [
         "## 7. Production Recommendations",
         "",

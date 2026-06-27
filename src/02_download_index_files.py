@@ -1,15 +1,4 @@
-"""
-02_download_index_files.py
---------------------------
-Downloads index JSON files listed in the manifest produced by step 01.
-
-Features:
-- Streaming download to avoid loading large files into memory.
-- Automatic retries with exponential backoff (3 attempts).
-- Size guard: files exceeding --max-size-mb are skipped.
-- Progress bar via tqdm.
-- Configurable delay between downloads to respect rate limits.
-"""
+"""Downloads index JSON files listed in the manifest produced by step 01."""
 import argparse
 import sys
 import time
@@ -20,7 +9,7 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so we can import from utils/
 from utils.io_utils import ensure_dir
 
 MAX_RETRIES = 3
@@ -40,13 +29,10 @@ def download_file(
 
     for attempt in range(1, retries + 1):
         try:
-            with requests.get(url, stream=True, timeout=timeout, headers={
-                "User-Agent": "Mozilla/5.0 UHC-TiC-DataEng/1.0",
-                "Accept": "application/json",
-            }) as r:
+            with requests.get(url, stream=True, timeout=timeout) as r:
                 r.raise_for_status()
 
-                # Check Content-Length before downloading
+                # bail early if the server tells us the file is too big
                 content_length = r.headers.get("content-length")
                 if content_length and int(content_length) > max_bytes:
                     return {
@@ -65,6 +51,7 @@ def download_file(
                         if not chunk:
                             continue
                         bytes_written += len(chunk)
+                        # also check mid-stream in case Content-Length was missing
                         if bytes_written > max_bytes:
                             f.close()
                             if output_path.exists():
@@ -136,6 +123,7 @@ def main():
         progress.set_postfix_str(file_name[:40], refresh=True)
 
         if output_path.exists():
+            # skip re-downloading files we already have
             result = {
                 "status": "already_exists",
                 "bytes_written": output_path.stat().st_size,
@@ -147,7 +135,7 @@ def main():
             }
         else:
             result = download_file(url, output_path, args.timeout, args.max_size_mb)
-            time.sleep(args.delay)
+            time.sleep(args.delay)  # be polite with the server
 
         logs.append({
             "file_rank": row["file_rank"],
@@ -160,7 +148,6 @@ def main():
     log_df = pd.DataFrame(logs)
     log_df.to_csv(args.log_output, index=False)
 
-    # Summary
     print(f"\nDownload log written to {args.log_output}")
     print(f"Results: {log_df['status'].value_counts().to_dict()}")
 

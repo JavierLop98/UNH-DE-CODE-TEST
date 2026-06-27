@@ -1,26 +1,13 @@
-"""
-01_discover_index_files.py
---------------------------
-Discovers UHC Transparency in Coverage index files via the public API.
-
-The UHC site is a JavaScript SPA; the data is served through a REST endpoint
-at /api/v1/uhc/blobs/ which returns a JSON list of available files.
-We filter for *_index.json files and build a manifest for downstream download.
-"""
+"""Discovers UHC Transparency in Coverage index files via the public API."""
 import argparse
 import sys
-import time
 from datetime import datetime, timezone
 
 import pandas as pd
 import requests
 
-# ---------------------------------------------------------------------------
-# The project root is one level above src/, so we add it to sys.path so that
-# `from utils.io_utils import ...` works when running the script directly.
-# ---------------------------------------------------------------------------
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so we can import from utils/
 
 from utils.io_utils import ensure_dir
 
@@ -28,14 +15,13 @@ API_URL = "https://transparency-in-coverage.uhc.com/api/v1/uhc/blobs/"
 
 
 def fetch_blob_list(api_url: str, timeout: int = 120) -> list[dict]:
-    """Call the UHC blobs API and return the list of blob metadata dicts."""
+    """Call the UHC blobs API and return blob metadata."""
     print(f"Fetching blob list from {api_url} ...")
-    response = requests.get(api_url, timeout=timeout, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) UHC-TiC-DataEng/1.0",
-        "Accept": "application/json",
-    })
+    response = requests.get(api_url, timeout=timeout)
     response.raise_for_status()
     data = response.json()
+
+    # the API wraps everything under a "blobs" key
     blobs = data.get("blobs", [])
     print(f"  -> received {len(blobs):,} blobs from API")
     return blobs

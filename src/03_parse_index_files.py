@@ -1,15 +1,4 @@
-"""
-03_parse_index_files.py
------------------------
-Parses downloaded UHC index JSON files into normalized analytical tables.
-
-Output tables (Parquet):
-  - index_files.parquet       — one row per parsed index file
-  - reporting_entities.parquet — reporting entity metadata
-  - plans.parquet              — plan-level detail
-  - referenced_files.parquet   — in-network and allowed-amount file references
-  - parse_log.csv              — success/failure status per file
-"""
+"""Parses downloaded UHC index JSON files into normalized Parquet tables."""
 import argparse
 import sys
 from pathlib import Path
@@ -17,12 +6,12 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so we can import from utils/
 from utils.io_utils import ensure_dir, safe_json_load
 
 
 def as_list(value):
-    """Normalize None / single dict / list to a list."""
+    """Normalize None / single dict / list into a list."""
     if value is None:
         return []
     return value if isinstance(value, list) else [value]
@@ -31,11 +20,11 @@ def as_list(value):
 def parse_index_json(
     path: Path, index_file_id: int, file_name: str
 ) -> tuple[list, list, list, list]:
-    """Parse a single index JSON file into four lists of row dicts."""
+    """Parse one index JSON into four lists of row dicts."""
     payload = safe_json_load(path)
     parsed_at = datetime.now(timezone.utc).isoformat()
 
-    # --- Index-level row ---
+    # top-level metadata about the index file itself
     index_rows = [{
         "index_file_id": index_file_id,
         "file_name": file_name,
@@ -47,7 +36,7 @@ def parse_index_json(
         "parsed_at": parsed_at,
     }]
 
-    # --- Reporting entity row ---
+    # the entity that reported this data (insurer, TPA, etc.)
     entity_rows = [{
         "index_file_id": index_file_id,
         "reporting_entity_name": payload.get("reporting_entity_name"),
@@ -56,14 +45,21 @@ def parse_index_json(
         "version": payload.get("version"),
     }]
 
-    # --- Plans and referenced files ---
     plan_rows = []
     ref_rows = []
+
+    # reporting_structure is the main array: each element groups
+    # a set of plans with their associated rate files
     reporting_structure = as_list(payload.get("reporting_structure"))
 
     for struct_idx, struct in enumerate(reporting_structure):
+        # reporting_plans = the insurance plans covered by this structure
         plans = as_list(struct.get("reporting_plans"))
+
+        # in_network_files = links to the actual negotiated-rate JSON files
         in_network_files = as_list(struct.get("in_network_files"))
+
+        # allowed_amount_file = out-of-network allowed amounts (sometimes absent)
         allowed_amount_files = as_list(struct.get("allowed_amount_file"))
 
         for plan_idx, plan in enumerate(plans):
@@ -77,6 +73,7 @@ def parse_index_json(
                 "plan_market_type": plan.get("plan_market_type"),
             })
 
+            # link each plan to its referenced rate files
             for file_type, files in [
                 ("in_network", in_network_files),
                 ("allowed_amount", allowed_amount_files),
@@ -105,6 +102,8 @@ def main():
 
     ensure_dir(args.output_dir)
     log = pd.read_csv(args.download_log)
+
+    # only parse files that were actually downloaded
     successful = log[log["status"].isin(["downloaded", "already_exists"])]
     print(f"Parsing {len(successful):,} successfully downloaded files ...")
 
@@ -132,7 +131,7 @@ def main():
                 "error_message": str(exc),
             })
 
-    # Write output Parquet / CSV
+    # write each normalized table to parquet (and the log to csv)
     pd.DataFrame(all_indexes).to_parquet(
         f"{args.output_dir}/index_files.parquet", index=False
     )
