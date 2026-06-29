@@ -1,71 +1,79 @@
+"""Discovers UHC Transparency in Coverage index files via the public API."""
 import argparse
+import sys
 from datetime import datetime, timezone
-from urllib.parse import urljoin
 
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so we can import from utils/
 
 from utils.io_utils import ensure_dir
 
-DEFAULT_URL = "https://transparency-in-coverage.uhc.com/"
+API_URL = "https://transparency-in-coverage.uhc.com/api/v1/uhc/blobs/"
 
 
-def discover_index_files(base_url: str, limit: int) -> pd.DataFrame:
-    response = requests.get(base_url, timeout=60)
+def fetch_blob_list(api_url: str, timeout: int = 120) -> list[dict]:
+    """Call the UHC blobs API and return blob metadata."""
+    print(f"Fetching blob list from {api_url} ...")
+    response = requests.get(api_url, timeout=timeout)
     response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
+    data = response.json()
 
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        text = a.get_text(strip=True)
-        candidate = href or text
-        if "_index.json" in candidate:
-            file_url = urljoin(base_url, href)
-            file_name = file_url.rstrip("/").split("/")[-1]
-            links.append({"file_name": file_name, "file_url": file_url})
+    # the API wraps everything under a "blobs" key
+    blobs = data.get("blobs", [])
+    print(f"  -> received {len(blobs):,} blobs from API")
+    return blobs
 
-    # Fallback for simple text/table pages where URLs appear as text rather than anchors
-    if not links:
-        for token in response.text.split():
-            if "_index.json" in token:
-                cleaned = token.strip('"\',<>')
-                file_url = urljoin(base_url, cleaned)
-                file_name = file_url.rstrip("/").split("/")[-1]
-                links.append({"file_name": file_name, "file_url": file_url})
 
-    seen = set()
-    deduped = []
-    for item in links:
-        if item["file_url"] not in seen:
-            seen.add(item["file_url"])
-            deduped.append(item)
-
+def filter_index_files(blobs: list[dict], limit: int) -> pd.DataFrame:
+    """Keep only *_index.json blobs and return as a DataFrame."""
     rows = []
     discovered_at = datetime.now(timezone.utc).isoformat()
-    for rank, item in enumerate(deduped[:limit], start=1):
+    rank = 0
+
+    for blob in blobs:
+        name = blob.get("name", "")
+        if not name.endswith("_index.json"):
+            continue
+        rank += 1
         rows.append({
             "file_rank": rank,
-            "file_name": item["file_name"],
-            "file_url": item["file_url"],
+            "file_name": name,
+            "download_url": blob.get("downloadUrl", ""),
+            "file_size_bytes": blob.get("size"),
             "discovered_at": discovered_at,
             "status": "pending",
         })
+        if rank >= limit:
+            break
+
     return pd.DataFrame(rows)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default=DEFAULT_URL)
-    parser.add_argument("--limit", type=int, default=1000)
-    parser.add_argument("--output", default="data/processed/index_manifest.csv")
+    parser = argparse.ArgumentParser(
+        description="Discover UHC TiC index files via the blobs API."
+    )
+    parser.add_argument("--api-url", default=API_URL,
+                        help="UHC blobs API endpoint")
+    parser.add_argument("--limit", type=int, default=1000,
+                        help="Maximum number of index files to include")
+    parser.add_argument("--output", default="data/processed/index_manifest.csv",
+                        help="Path for the output manifest CSV")
+    parser.add_argument("--timeout", type=int, default=120,
+                        help="HTTP request timeout in seconds")
     args = parser.parse_args()
 
     ensure_dir("data/processed")
-    manifest = discover_index_files(args.url, args.limit)
+
+    blobs = fetch_blob_list(args.api_url, args.timeout)
+    manifest = filter_index_files(blobs, args.limit)
+
     manifest.to_csv(args.output, index=False)
-    print(f"Discovered {len(manifest)} index files. Manifest written to {args.output}")
+    print(f"\nDiscovered {len(manifest):,} index files.")
+    print(f"Manifest written to {args.output}")
 
 
 if __name__ == "__main__":

@@ -2,8 +2,6 @@
 __pycache__/
 *.pyc
 .env
-data/raw/*.json
-data/processed/*.parquet
-data/processed/*.csv
-reports/*.md
+data/raw/
+data/processed/
 .DS_Store

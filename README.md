@@ -1,110 +1,178 @@
-# UHC Transparency In Coverage - Data Engineering Technical Task
+# UHC Transparency in Coverage — Data Engineering Technical Task
 
-This project implements an end-to-end data engineering workflow for the technical task:
+## Overview
 
-> Download the first 1000 UHC Transparency in Coverage index JSON files, ingest and parse the data, store it locally / optionally in Snowflake, and present meaningful insights.
+End-to-end data pipeline that extracts, transforms and analyzes the first 1,000 UHC Transparency in Coverage index files.
 
-## Goals
+> **Task:** Download UHC index files from [https://transparency-in-coverage.uhc.com/](https://transparency-in-coverage.uhc.com/), parse the data, store it locally, and present meaningful insights.
 
-- Discover the first 1000 `*_index.json` files published at the UHC Transparency in Coverage website.
-- Download index files safely using streaming, retries and metadata logging.
-- Parse relevant JSON fields into normalized analytical datasets.
-- Store processed outputs as Parquet/CSV locally.
-- Optionally load curated tables into Snowflake.
-- Generate insight tables that can be discussed during the technical interview.
-
-## Proposed Architecture
+## Architecture
 
 ```text
-UHC Transparency Site
-        |
-        v
-01_discover_index_files.py
-        |
-        v
-data/processed/index_manifest.csv
-        |
-        v
-02_download_index_files.py
-        |
-        v
-data/raw/*.json + data/processed/download_log.csv
-        |
-        v
-03_parse_index_files.py
-        |
-        v
-data/processed/index_files.parquet
- data/processed/reporting_entities.parquet
- data/processed/plans.parquet
- data/processed/referenced_files.parquet
-        |
-        v
-04_generate_insights.py
-        |
-        v
-reports/insights_summary.md
+                    UHC Transparency Site
+                    (JavaScript SPA + REST API)
+                            |
+                            v
+        +---- 01_discover_index_files.py ----+
+        |  GET /api/v1/uhc/blobs/            |
+        |  Filter *_index.json (first 1000)  |
+        +------------+---------------------- +
+                     |
+                     v
+        data/processed/index_manifest.csv
+                     |
+                     v
+        +---- 02_download_index_files.py ----+
+        |  Streaming download + retries      |
+        |  Rate-limit delay + size guard     |
+        +------------+---------------------- +
+                     |
+                     v
+        data/raw/*.json + data/processed/download_log.csv
+                     |
+                     v
+        +---- 03_parse_index_files.py -------+
+        |  Normalize JSON -> 4 Parquet tables|
+        |  index_files, entities,            |
+        |  plans, referenced_files           |
+        +------------+---------------------- +
+                     |
+                     v
+        data/processed/*.parquet
+                     |
+                     v
+        +---- 04_generate_insights.py -------+
+        |  Aggregations, distributions,      |
+        |  data quality, recommendations     |
+        +------------+---------------------- +
+                     |
+                     v
+        reports/insights_summary.md
+                     |
+                     v
+        +---- 05_advanced_insights.py -------+
+        |  Charts (matplotlib/seaborn),      |
+        |  extended analysis                 |
+        +------------+---------------------- +
+                     |
+                     v
+        reports/charts/*.png + reports/extended_insights.md
 ```
+
+## Data Model
+
+The pipeline produces four normalized tables stored as Parquet:
+
+| Table | Description | Key Columns |
+|-------|-------------|-------------|
+| `index_files` | One row per parsed JSON file | `index_file_id`, `reporting_entity_name`, `reporting_entity_type`, `version` |
+| `reporting_entities` | Entity metadata | `reporting_entity_name`, `reporting_entity_type` |
+| `plans` | Plans within each index file | `plan_key`, `plan_name`, `plan_id`, `plan_id_type`, `plan_market_type` |
+| `referenced_files` | In-network and allowed-amount file URLs | `referenced_file_key`, `file_type`, `location_url` |
+
+All tables are linked by `index_file_id`. Plans link to referenced files via `plan_key`.
 
 ## Setup
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+
+# Windows
+.venv\Scripts\activate
+
+# macOS/Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-## Run locally
+## Run the Pipeline
 
 ```bash
+# Step 1: Discover index files from UHC API (~15 seconds)
 python src/01_discover_index_files.py --limit 1000
+
+# Step 2: Download index JSON files (~35 min for 1000 files)
 python src/02_download_index_files.py --limit 1000
+
+# Step 3: Parse JSON files into normalized Parquet tables (~1 min)
 python src/03_parse_index_files.py
+
+# Step 4: Generate insights report (~30 sec)
 python src/04_generate_insights.py
+
+# Step 5: Generate charts and extended analysis (~10 sec)
+python src/05_advanced_insights.py
 ```
+
+### Command-Line Options
+
+| Script | Flag | Default | Description |
+|--------|------|---------|-------------|
+| `01` | `--limit` | 1000 | Max index files to discover |
+| `01` | `--timeout` | 120 | HTTP timeout for API call |
+| `02` | `--limit` | 1000 | Max files to download |
+| `02` | `--delay` | 0.1 | Seconds between downloads |
+| `02` | `--max-size-mb` | 512 | Skip files larger than this |
+| `02` | `--timeout` | 60 | Per-file download timeout |
 
 ## Optional: Load to Snowflake
 
-1. Create a Snowflake trial account.
-2. Create a database/schema.
-3. Set environment variables:
+Requires `pip install snowflake-connector-python` (not included in requirements.txt by default).
+
+1. Set environment variables (see `config.example.env`).
+2. Run:
 
 ```bash
-export SNOWFLAKE_ACCOUNT="<account>"
-export SNOWFLAKE_USER="<user>"
-export SNOWFLAKE_PASSWORD="<password>"
-export SNOWFLAKE_WAREHOUSE="<warehouse>"
-export SNOWFLAKE_DATABASE="<database>"
-export SNOWFLAKE_SCHEMA="<schema>"
+python src/06_load_to_snowflake.py
 ```
 
-4. Run:
-
-```bash
-python src/05_load_to_snowflake.py
-```
+DDL is in [`sql/create_tables.sql`](sql/create_tables.sql). Sample queries in [`sql/insights.sql`](sql/insights.sql).
 
 ## Design Decisions
 
-- Files are downloaded in streaming mode to avoid loading large JSON files into memory.
-- Raw files are retained for auditability and reproducibility.
-- Parsing is isolated from download logic so failed downloads do not block analysis of valid files.
-- The output model separates index files, reporting entities, plans and referenced files.
-- Insights include operational metrics, data quality findings and distribution analysis.
+| Decision | Rationale |
+|----------|-----------|
+| **API instead of scraping** | The UHC site is a JavaScript SPA. The `/api/v1/uhc/blobs/` endpoint returns JSON directly, no browser automation needed. |
+| **Streaming downloads** | Avoids loading entire files into memory. |
+| **Retry with exponential backoff** | UHC API occasionally returns 5xx errors. Three retries with 2/4/8s delays handle this. |
+| **Size guard (512 MB)** | Skips unexpectedly large files to protect local disk. |
+| **Parquet** | Columnar format, good compression, works with Snowflake/Spark/Pandas. |
+| **Separate parse from download** | Failed downloads don't block analysis of successfully downloaded files. |
+| **Normalized data model** | Avoids nested structures, enables clean SQL-style joins. |
 
-## Interview Walkthrough
+## Project Structure
 
-Recommended walkthrough structure:
-
-1. Explain the risk of very large JSON files and why streaming download was used.
-2. Show the manifest and download log.
-3. Walk through parsing logic and normalized model.
-4. Show data quality checks and failed/skipped records.
-5. Present insights from `reports/insights_summary.md`.
-6. Explain how this would be productionized using Airflow/ADF, CI/CD, monitoring and alerts.
+```
+UNH-DE-CODE-TEST/
+├── src/
+│   ├── 01_discover_index_files.py   # API-based file discovery
+│   ├── 02_download_index_files.py   # Streaming download with retries
+│   ├── 03_parse_index_files.py      # JSON -> Parquet normalization
+│   ├── 04_generate_insights.py      # Analytics and reporting
+│   ├── 05_advanced_insights.py      # Charts and extended analysis
+│   ├── 06_load_to_snowflake.py      # Optional Snowflake loader
+│   └── utils/
+│       ├── __init__.py
+│       └── io_utils.py
+├── sql/
+│   ├── create_tables.sql
+│   └── insights.sql
+├── data/
+│   ├── raw/                         # Downloaded JSON files (git-ignored)
+│   └── processed/                   # Parquet + logs (git-ignored)
+├── reports/
+│   ├── insights_summary.md
+│   ├── extended_insights.md
+│   └── charts/                      # 11 PNG charts
+├── requirements.txt
+├── config.example.env
+└── README.md
+```
 
 ## Assumptions
 
-- The task focuses on the UHC index files, not downloading every large machine-readable file referenced by each index.
-- Some index files may be unavailable, malformed, duplicated or too large for the local environment.
-- Local Parquet files are used as the main reproducible analytical layer; Snowflake loading is optional.
+- The task focuses on **index files** (table of contents), not the multi-GB in-network rate files they reference.
+- The pipeline handles missing, malformed, or empty files gracefully.
+- Parquet files serve as the analytical layer; Snowflake loading is optional.
+- The UHC API endpoint is undocumented and may change.

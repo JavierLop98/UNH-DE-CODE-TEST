@@ -1,66 +1,109 @@
+"""Downloads index JSON files listed in the manifest produced by step 01."""
 import argparse
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import requests
+from tqdm import tqdm
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so we can import from utils/
 from utils.io_utils import ensure_dir
 
+MAX_RETRIES = 3
+BACKOFF_BASE = 2  # seconds
 
-def download_file(url: str, output_path: Path, timeout: int, max_size_mb: int) -> dict:
+
+def download_file(
+    url: str,
+    output_path: Path,
+    timeout: int,
+    max_size_mb: int,
+    retries: int = MAX_RETRIES,
+) -> dict:
+    """Download a single file with retries and size guard."""
     started_at = datetime.now(timezone.utc).isoformat()
-    status = "downloaded"
-    error = None
-    bytes_written = 0
     max_bytes = max_size_mb * 1024 * 1024
 
-    try:
-        with requests.get(url, stream=True, timeout=timeout) as r:
-            r.raise_for_status()
-            content_length = r.headers.get("content-length")
-            if content_length and int(content_length) > max_bytes:
+    for attempt in range(1, retries + 1):
+        try:
+            with requests.get(url, stream=True, timeout=timeout) as r:
+                r.raise_for_status()
+
+                # bail early if the server tells us the file is too big
+                content_length = r.headers.get("content-length")
+                if content_length and int(content_length) > max_bytes:
+                    return {
+                        "status": "skipped_too_large",
+                        "bytes_written": 0,
+                        "content_length": int(content_length),
+                        "started_at": started_at,
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                        "error_message": f"Content-Length {int(content_length):,} exceeds {max_size_mb} MB",
+                        "attempts": attempt,
+                    }
+
+                bytes_written = 0
+                with open(output_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if not chunk:
+                            continue
+                        bytes_written += len(chunk)
+                        # also check mid-stream in case Content-Length was missing
+                        if bytes_written > max_bytes:
+                            f.close()
+                            if output_path.exists():
+                                output_path.unlink()
+                            return {
+                                "status": "skipped_too_large",
+                                "bytes_written": bytes_written,
+                                "content_length": None,
+                                "started_at": started_at,
+                                "finished_at": datetime.now(timezone.utc).isoformat(),
+                                "error_message": f"Streamed bytes exceed {max_size_mb} MB",
+                                "attempts": attempt,
+                            }
+                        f.write(chunk)
+
+            return {
+                "status": "downloaded",
+                "bytes_written": bytes_written,
+                "content_length": content_length,
+                "started_at": started_at,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "error_message": None,
+                "attempts": attempt,
+            }
+
+        except Exception as exc:
+            if attempt < retries:
+                wait = BACKOFF_BASE ** attempt
+                time.sleep(wait)
+            else:
                 return {
-                    "status": "skipped_too_large",
+                    "status": "failed",
                     "bytes_written": 0,
-                    "content_length": int(content_length),
+                    "content_length": None,
                     "started_at": started_at,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
-                    "error_message": f"Content-Length exceeds {max_size_mb} MB",
+                    "error_message": str(exc),
+                    "attempts": attempt,
                 }
-            with open(output_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    bytes_written += len(chunk)
-                    if bytes_written > max_bytes:
-                        status = "skipped_too_large"
-                        error = f"Streamed bytes exceed {max_size_mb} MB"
-                        break
-                    f.write(chunk)
-        if status == "skipped_too_large" and output_path.exists():
-            output_path.unlink()
-    except Exception as exc:
-        status = "failed"
-        error = str(exc)
-
-    return {
-        "status": status,
-        "bytes_written": bytes_written,
-        "content_length": None,
-        "started_at": started_at,
-        "finished_at": datetime.now(timezone.utc).isoformat(),
-        "error_message": error,
-    }
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Download UHC index files from the manifest."
+    )
     parser.add_argument("--manifest", default="data/processed/index_manifest.csv")
     parser.add_argument("--raw-dir", default="data/raw")
     parser.add_argument("--limit", type=int, default=1000)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--max-size-mb", type=int, default=512)
+    parser.add_argument("--delay", type=float, default=0.1,
+                        help="Seconds to wait between downloads")
     parser.add_argument("--log-output", default="data/processed/download_log.csv")
     args = parser.parse_args()
 
@@ -69,11 +112,18 @@ def main():
     manifest = pd.read_csv(args.manifest).head(args.limit)
 
     logs = []
-    for _, row in manifest.iterrows():
+    progress = tqdm(manifest.iterrows(), total=len(manifest), desc="Downloading",
+                    unit="file", ncols=100)
+
+    for _, row in progress:
         file_name = row["file_name"]
-        url = row["file_url"]
+        url = row["download_url"]
         output_path = Path(args.raw_dir) / file_name
+
+        progress.set_postfix_str(file_name[:40], refresh=True)
+
         if output_path.exists():
+            # skip re-downloading files we already have
             result = {
                 "status": "already_exists",
                 "bytes_written": output_path.stat().st_size,
@@ -81,14 +131,25 @@ def main():
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "error_message": None,
+                "attempts": 0,
             }
         else:
             result = download_file(url, output_path, args.timeout, args.max_size_mb)
-        logs.append({**row.to_dict(), "local_path": str(output_path), **result})
-        print(f"{row['file_rank']}: {file_name} -> {result['status']}")
+            time.sleep(args.delay)  # be polite with the server
 
-    pd.DataFrame(logs).to_csv(args.log_output, index=False)
-    print(f"Download log written to {args.log_output}")
+        logs.append({
+            "file_rank": row["file_rank"],
+            "file_name": file_name,
+            "download_url": url,
+            "local_path": str(output_path),
+            **result,
+        })
+
+    log_df = pd.DataFrame(logs)
+    log_df.to_csv(args.log_output, index=False)
+
+    print(f"\nDownload log written to {args.log_output}")
+    print(f"Results: {log_df['status'].value_counts().to_dict()}")
 
 
 if __name__ == "__main__":
